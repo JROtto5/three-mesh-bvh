@@ -2,6 +2,7 @@
 /** @import { BVHComputeData } from '../BVHComputeData.js' */
 import { wgslTagCode, wgslTagFn } from '../nodes/WGSLTagFnNode.js';
 import { BVH_STACK_DEPTH } from '../tsl/constants.js';
+import { bvhDecodeBounds } from '../tsl/fns.js';
 import { NOT_INTERSECTED, STOP_TRAVERSAL } from '../../core/Constants.js';
 
 /**
@@ -16,7 +17,9 @@ import { NOT_INTERSECTED, STOP_TRAVERSAL } from '../../core/Constants.js';
  * @param {StructTypeNode} options.shapeStruct - TSL struct or definition describing the query shape.
  * @param {StructTypeNode|null} [options.resultStruct] - TSL struct for the accumulated result, or null.
  * @param {Function|null} [options.prefixFn] - function node that runs before the bvh traversal - useful for resetting or initializing necessary module variables.
- * @param {Function|null} [options.boundsOrderFn] - function node controlling left/right child traversal order.
+ * @param {Function|null} [options.boundsOrderFn] - function node controlling left/right child traversal order,
+ * called as `( shape, splitAxis, node, frameOrigin, frameStep )`. The node's child bounds are 16 bit steps from
+ * the frame, see `bvhDecodeBounds`.
  * @param {Function} options.intersectsBoundsFn - function node testing the shape against a BVH node's bounds.
  * @param {Function} options.intersectRangeFn - function node testing a leaf triangle range, called with the shape,
  * the range's triangle offset and count, the "indexOffset" and "attributesOffset" of the geometry being traversed
@@ -53,6 +56,7 @@ export function getShapecastFn( bvhData, options ) {
 
 	// these are proxy nodes, so they can be referenced before the storage buffers exist
 	const { nodes, objects } = bvhData.storage;
+	const { _tlasFrameOrigin: tlasFrameOrigin, _tlasFrameStep: tlasFrameStep } = bvhData;
 
 	let prefixSnippet = '';
 	if ( prefixFn ) {
@@ -87,7 +91,7 @@ export function getShapecastFn( bvhData, options ) {
 	if ( boundsOrderFn ) {
 
 		leftToRightSnippet = wgslTagCode/* wgsl */`
-			let leftToRight = ${ boundsOrderFn }( localShape, splitAxis, node );
+			let leftToRight = ${ boundsOrderFn }( localShape, splitAxis, node, frameOrigin, frameStep );
 			c1 = select( rightIndex, leftIndex, leftToRight );
 			c2 = select( leftIndex, rightIndex, leftToRight );
 			hit1 = select( hitRight, hitLeft, leftToRight );
@@ -122,6 +126,10 @@ export function getShapecastFn( bvhData, options ) {
 			var attributesOffset: u32 = 0;
 			var localShape: ${ shapeStruct } = shape;
 
+			// the frame the current tree's child bounds are quantized against
+			var frameOrigin = ${ tlasFrameOrigin };
+			var frameStep = ${ tlasFrameStep };
+
 			// the stack depth the current cluster's BLAS drains back down to once it is complete
 			var tlasReset: i32 = 0;
 
@@ -144,6 +152,8 @@ export function getShapecastFn( bvhData, options ) {
 					objectIndex = 0;
 					isTLAS = true;
 					localShape = shape;
+					frameOrigin = ${ tlasFrameOrigin };
+					frameStep = ${ tlasFrameStep };
 
 				}
 
@@ -191,6 +201,10 @@ export function getShapecastFn( bvhData, options ) {
 								indexOffset = objectRecord.indexOffset;
 								attributesOffset = objectRecord.attributesOffset;
 
+								// the leaf holds the frame of the subtree's bounds in place of child bounds
+								frameOrigin = vec3f( bitcast<f32>( node.bounds[ 0 ] ), bitcast<f32>( node.bounds[ 1 ] ), bitcast<f32>( node.bounds[ 2 ] ) );
+								frameStep = vec3f( bitcast<f32>( node.bounds[ 3 ] ), bitcast<f32>( node.bounds[ 4 ] ), bitcast<f32>( node.bounds[ 5 ] ) );
+
 								pointer = pointer + 1;
 								stack[ pointer ] = infoY;
 
@@ -221,8 +235,10 @@ export function getShapecastFn( bvhData, options ) {
 					let leftIndex = nodeIndex + 1u;
 					let splitAxis = infoX & 0x0000ffffu;
 					let rightIndex = nodeIndex + infoY;
-					let hitLeft = ${ intersectsBoundsFn }( localShape, node.leftBounds, ${ resultArg } ) != 0u;
-					let hitRight = ${ intersectsBoundsFn }( localShape, node.rightBounds, ${ resultArg } ) != 0u;
+					let leftBounds = ${ bvhDecodeBounds }( node.bounds[ 0 ], node.bounds[ 1 ], node.bounds[ 2 ], frameOrigin, frameStep );
+					let rightBounds = ${ bvhDecodeBounds }( node.bounds[ 3 ], node.bounds[ 4 ], node.bounds[ 5 ], frameOrigin, frameStep );
+					let hitLeft = ${ intersectsBoundsFn }( localShape, leftBounds, ${ resultArg } ) != 0u;
+					let hitRight = ${ intersectsBoundsFn }( localShape, rightBounds, ${ resultArg } ) != 0u;
 
 					var c1 = rightIndex;
 					var c2 = leftIndex;
