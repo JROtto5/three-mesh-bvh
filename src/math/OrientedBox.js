@@ -316,7 +316,8 @@ OrientedBox.prototype.distanceToPoint = ( function () {
 /**
  * Returns the distance to the provided box. `threshold` is an optional distance to return early
  * if the distance is found to be within it. `target1` and `target2` are set to the points on the
- * surface of this box and the `box` argument respectively.
+ * surface of this box and the `box` argument respectively, or both to the same point inside both
+ * boxes if they intersect.
  * @function
  * @param {Box3} box
  * @param {number} [threshold=0]
@@ -332,6 +333,63 @@ OrientedBox.prototype.distanceToBox = ( function () {
 
 	const point1 = /* @__PURE__ */ new Vector3();
 	const point2 = /* @__PURE__ */ new Vector3();
+	const boxPoints = /* @__PURE__ */ new Array( 8 ).fill().map( () => new Vector3() );
+	const localBoxPoints = /* @__PURE__ */ new Array( 8 ).fill().map( () => new Vector3() );
+
+	// returns the parameter of the middle of the part of the segment inside the box, or -1 if it misses
+	function clipSegmentToBox( start, end, min, max ) {
+
+		let t0 = 0;
+		let t1 = 1;
+		for ( let i = 0; i < 3; i ++ ) {
+
+			const f = xyzFields[ i ];
+			const s = start[ f ];
+			const d = end[ f ] - s;
+			if ( d === 0 ) {
+
+				if ( s < min[ f ] || s > max[ f ] ) return - 1;
+				continue;
+
+			}
+
+			const ta = ( min[ f ] - s ) / d;
+			const tb = ( max[ f ] - s ) / d;
+			t0 = Math.max( t0, Math.min( ta, tb ) );
+			t1 = Math.min( t1, Math.max( ta, tb ) );
+			if ( t0 > t1 ) return - 1;
+
+		}
+
+		return ( t0 + t1 ) / 2;
+
+	}
+
+	// Sets target to the middle of the first box edge that passes through the given bounds. Edges are
+	// clipped using the "clipPoints" corners and the point is interpolated between the matching "points".
+	function clipBoxEdges( points, clipPoints, min, max, target ) {
+
+		for ( let i = 0; i < 8; i ++ ) {
+
+			for ( let bit = 1; bit < 8; bit <<= 1 ) {
+
+				if ( i & bit ) continue;
+
+				const t = clipSegmentToBox( clipPoints[ i ], clipPoints[ i | bit ], min, max );
+				if ( t !== - 1 ) {
+
+					target.lerpVectors( points[ i ], points[ i | bit ], t );
+					return true;
+
+				}
+
+			}
+
+		}
+
+		return false;
+
+	}
 
 	// early out if we find a value below threshold
 	return function distanceToBox( box, threshold = 0, target1 = null, target2 = null ) {
@@ -346,10 +404,36 @@ OrientedBox.prototype.distanceToBox = ( function () {
 
 			if ( target1 || target2 ) {
 
-				box.getCenter( point2 );
-				this.closestPointToPoint( point2, point1 );
-				// Box3 has no "closestPointToPoint" - "clampPoint" returns the closest point in the box
-				box.clampPoint( point1, point2 );
+				// Intersecting boxes always have an edge of one passing through the other (a contained corner
+				// is the end of three such edges), so the middle of the clipped part is inside both boxes. The
+				// box edges are clipped in the local frame of this box and interpolated in world space.
+				const { min, max } = box;
+				for ( let i = 0; i < 8; i ++ ) {
+
+					const p = boxPoints[ i ];
+					p.x = i & 1 ? max.x : min.x;
+					p.y = i & 2 ? max.y : min.y;
+					p.z = i & 4 ? max.z : min.z;
+					localBoxPoints[ i ].copy( p ).applyMatrix4( this.invMatrix );
+
+				}
+
+				if (
+					clipBoxEdges( this.points, this.points, min, max, point1 ) ||
+					clipBoxEdges( boxPoints, localBoxPoints, this.min, this.max, point1 )
+				) {
+
+					point2.copy( point1 );
+
+				} else {
+
+					// "intersectsBox" only tests the face axes so the boxes may still be separated on an edge axis
+					box.getCenter( point2 );
+					this.closestPointToPoint( point2, point1 );
+					// Box3 has no "closestPointToPoint" - "clampPoint" returns the closest point in the box
+					box.clampPoint( point1, point2 );
+
+				}
 
 				if ( target1 ) target1.copy( point1 );
 				if ( target2 ) target2.copy( point2 );

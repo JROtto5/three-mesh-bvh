@@ -196,7 +196,19 @@ describe( 'OBB Distance', () => {
 
 	} );
 
-	it( 'should set the target points when the boxes intersect', () => {
+	// returns true if the distance is 0 and both targets are the same point inside both boxes
+	function hasCommonPoint( box, aabb ) {
+
+		const target1 = new Vector3();
+		const target2 = new Vector3();
+		return box.distanceToBox( aabb, 0, target1, target2 ) === 0 &&
+			target1.equals( target2 ) &&
+			box.distanceToPoint( target1 ) < 1e-6 &&
+			aabb.distanceToPoint( target1 ) < 1e-6;
+
+	}
+
+	it( 'should set both targets to one common point when the boxes intersect', () => {
 
 		const aabb = new Box3(
 			new Vector3( 0, 0, 0 ),
@@ -209,13 +221,71 @@ describe( 'OBB Distance', () => {
 		box.matrix.makeRotationY( Math.PI / 4 ).setPosition( 2, 1, 1 );
 		box.needsUpdate = true;
 
-		const target1 = new Vector3();
-		const target2 = new Vector3();
-		expect( box.distanceToBox( aabb, 0, target1, target2 ) ).toBe( 0 );
+		expect( hasCommonPoint( box, aabb ) ).toBe( true );
 
-		// target1 is on this box and target2 is inside the AABB
-		expect( box.distanceToPoint( target1 ) ).toBeCloseTo( 0, 5 );
-		expect( aabb.containsPoint( target2 ) ).toBe( true );
+		// the point on the OBB closest to the center of this thin AABB is outside of it
+		aabb.max.z = 0.2;
+		box.matrix.setPosition( 2, 1, 0.5 );
+		box.needsUpdate = true;
+
+		expect( hasCommonPoint( box, aabb ) ).toBe( true );
+
+	} );
+
+	it( 'should find a common point when only the edges of the boxes cross', () => {
+
+		const aabb = new Box3(
+			new Vector3( - 2, - 0.1, - 0.1 ),
+			new Vector3( 2, 0.1, 0.1 ),
+		);
+
+		const box = new OrientedBox();
+		box.min.set( - 0.1, - 2, - 0.1 );
+		box.max.set( 0.1, 2, 0.1 );
+		box.matrix.makeRotationY( Math.PI / 4 );
+		box.needsUpdate = true;
+
+		expect( hasCommonPoint( box, aabb ) ).toBe( true );
+
+	} );
+
+	it( 'should find a common point when one box contains the other', () => {
+
+		const box = new OrientedBox();
+		box.min.setScalar( - 5 );
+		box.max.setScalar( 5 );
+		box.matrix.makeRotationY( Math.PI / 4 );
+		box.needsUpdate = true;
+
+		expect( hasCommonPoint( box, new Box3( new Vector3( - 1, - 1, - 1 ), new Vector3( 1, 1, 1 ) ) ) ).toBe( true );
+		expect( hasCommonPoint( box, new Box3( new Vector3( - 20, - 20, - 20 ), new Vector3( 20, 20, 20 ) ) ) ).toBe( true );
+
+	} );
+
+	it( 'should find a common point for randomly placed intersecting boxes', () => {
+
+		const box = new OrientedBox();
+		box.min.set( - 1, - 0.5, - 0.25 );
+		box.max.set( 1, 0.5, 0.25 );
+
+		// grow the AABB around a random point inside the OBB so the two always overlap
+		const aabb = new Box3();
+		const point = new Vector3();
+		for ( let i = 0; i < 1000; i ++ ) {
+
+			getRandomOrientation( box.matrix, 2 );
+			box.needsUpdate = true;
+
+			point.set( Math.random(), Math.random(), Math.random() )
+				.multiply( box.max.clone().sub( box.min ) )
+				.add( box.min )
+				.applyMatrix4( box.matrix );
+			aabb.min.set( Math.random(), Math.random(), Math.random() ).multiplyScalar( - 2 ).add( point );
+			aabb.max.set( Math.random(), Math.random(), Math.random() ).multiplyScalar( 2 ).add( point );
+
+			expect( hasCommonPoint( box, aabb ) ).toBe( true );
+
+		}
 
 	} );
 
